@@ -252,13 +252,12 @@ public class MercurialSCM extends SCM implements Serializable {
             
             ArgumentListBuilder logCmd = findHgExe(node, listener, false);
             logCmd.add("log", "--style", tmpFile.getRemote());
-            logCmd.add("--branch", getBranch());
-            logCmd.add("--no-merges");
+            logCmd.add(argumentsForChangesSinceLastBuild(getBranch(), baseline));
+            logCmd.add("--no-merges"); //for polling in particular we are not interested in the merges
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             ForkOutputStream fos = new ForkOutputStream(baos, output);
 
-            logCmd.add("--prune", baseline.id);
             joinWithPossibleTimeout(
                     launch(launcher).cmds(logCmd).stdout(fos).pwd(repository),
                     true, listener);
@@ -479,10 +478,8 @@ public class MercurialSCM extends SCM implements Serializable {
                 os.write("<changesets>\n".getBytes());
                 ArgumentListBuilder args = findHgExe(build, listener, false);
                 args.add("log");
+                args.add(argumentsForChangesSinceLastBuild(getBranch(env), prevTag));
                 args.add("--template", MercurialChangeSet.CHANGELOG_TEMPLATE);
-                args.add("--rev", getBranch(env) + ":0");
-                args.add("--follow");
-                args.add("--prune", prevTag.getId());
 
                 ByteArrayOutputStream errorLog = new ByteArrayOutputStream();
 
@@ -506,6 +503,14 @@ public class MercurialSCM extends SCM implements Serializable {
         } finally {
             os.close();
         }
+    }
+
+    private String[] argumentsForChangesSinceLastBuild(String branch, MercurialTagAction prevTag) {
+        return new String[]{
+                "--rev", branch + ":0",
+                "--follow",
+                "--prune", prevTag.getId()
+        };
     }
 
     /*

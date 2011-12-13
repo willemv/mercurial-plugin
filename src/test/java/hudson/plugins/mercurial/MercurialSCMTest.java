@@ -118,6 +118,30 @@ public class MercurialSCMTest extends MercurialTestCase {
         assertEquals(PollingResult.Change.INSIGNIFICANT, pr.change);
         buildAndCheck(p, "dir4/f");
     }
+    
+    public void testPollingWithMerges() throws Exception {
+        PollingResult pr;
+        
+        FreeStyleProject p = createFreeStyleProject();
+        p.setScm(new MercurialSCM(hgInstallation, repo.getPath(), "v10",
+                null, null, null, false));
+        
+        
+        hg(repo, "init");
+        hg(repo, "branch", "v10");
+        touchAndCommit(repo, "a");
+        buildAndCheck(p, "a");
+        hg(repo, "branch", "v9");
+        touchAndCommit(repo, "x");
+        assertFalse(pollSCMChanges(p).hasChanges());
+
+        hg(repo, "update", "v10");
+        hg(repo, "merge", "v9");
+        hg(repo, "commit", "-m", "merged changes from v9 branch");
+        assertTrue(pollSCMChanges(p).hasChanges());
+        
+        
+    }
 
     @Bug(6337)
     public void testPollingLimitedToModules2() throws Exception {
