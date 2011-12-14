@@ -3,26 +3,20 @@ package hudson.plugins.mercurial;
 import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Proc;
-import hudson.model.AbstractBuild;
-import hudson.model.FreeStyleProject;
-import hudson.model.ParametersAction;
-import hudson.model.Result;
-import hudson.model.StringParameterValue;
+import hudson.model.*;
+import hudson.model.Messages;
 import hudson.scm.ChangeLogSet;
 import hudson.scm.ChangeLogSet.Entry;
 import hudson.scm.PollingResult;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Set;
+import java.io.OutputStream;
+import java.util.*;
+import java.util.concurrent.ExecutionException;
 
+import hudson.slaves.OfflineCause;
+import hudson.slaves.SlaveComputer;
 import org.jvnet.hudson.test.Bug;
 import org.jvnet.hudson.test.FakeLauncher;
 import org.jvnet.hudson.test.PretendSlave;
@@ -434,7 +428,12 @@ public class MercurialSCMTest extends MercurialTestCase {
         // We lost the workspace
         b.getWorkspace().deleteRecursive();
         pr = pollSCMChanges(p);
-        assertPollingResult(PollingResult.Change.INCOMPARABLE, null, null, pr);
+
+        if (p.getScm().requiresWorkspaceForPolling()) {
+            assertPollingResult(PollingResult.Change.INCOMPARABLE, null, null, pr);
+        } else {
+            assertPollingResult(PollingResult.Change.NONE, cs2, cs2, pr);
+        }
         b = p.scheduleBuild2(0).get();
 
         // Multiple polls

@@ -8,12 +8,7 @@ import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Launcher.ProcStarter;
 import hudson.Util;
-import hudson.model.BuildListener;
-import hudson.model.TaskListener;
-import hudson.model.AbstractBuild;
-import hudson.model.AbstractProject;
-import hudson.model.Computer;
-import hudson.model.Node;
+import hudson.model.*;
 import hudson.plugins.mercurial.browser.HgBrowser;
 import hudson.plugins.mercurial.browser.HgWeb;
 import hudson.scm.ChangeLogParser;
@@ -232,6 +227,12 @@ public class MercurialSCM extends SCM implements Serializable {
     private static final String FILES_STYLE = "changeset = 'id:{node}\\nfiles:{files}\\n'\n" + "file = '{file}:'";
 
     @Override
+    public boolean requiresWorkspaceForPolling() {
+        MercurialInstallation mercurialInstallation = findInstallation(installation);
+        return mercurialInstallation == null || !(mercurialInstallation.isUseCaches() || mercurialInstallation.isUseSharing() );
+    }
+
+    @Override
     protected PollingResult compareRemoteRevisionWith(AbstractProject<?, ?> project, Launcher launcher, FilePath workspace,
             TaskListener listener, SCMRevisionState _baseline) throws IOException, InterruptedException {
         MercurialTagAction baseline = (MercurialTagAction)_baseline;
@@ -240,30 +241,26 @@ public class MercurialSCM extends SCM implements Serializable {
 
         // XXX do canUpdate check similar to in checkout, and possibly return INCOMPARABLE
 
-        // Mercurial requires the style file to be in a file..
         Set<String> changedFileNames = new HashSet<String>();
+
+        if (!requiresWorkspaceForPolling()) {
+            launcher = Hudson.getInstance().createLauncher(listener);
+            PossiblyCachedRepo possiblyCachedRepo = getUpToDateCache(Hudson.getInstance(), launcher, listener, true);
+            FilePath repositoryCache = new FilePath(new File(possiblyCachedRepo.getRepoLocation()));
+            FilePath styleFile = new FilePath(File.createTempFile("tmp", "style"));
+            styleFile.write(FILES_STYLE, null);
+            return compare(launcher, listener, baseline, output, changedFileNames, styleFile, Hudson.getInstance(), repositoryCache);
+        }
+        // Mercurial requires the style file to be in a file..
         FilePath tmpFile = workspace.createTextTempFile("tmp", "style", FILES_STYLE);
         try {
             // Get the list of changed files.
             Node node = project.getLastBuiltOn(); // HUDSON-5984: ugly but matches what AbstractProject.poll uses
 
             FilePath repository = workspace2Repo(workspace);
-            pull(launcher, repository, listener, output, node,getBranch());
-            
-            ArgumentListBuilder logCmd = findHgExe(node, listener, false);
-            logCmd.add("log", "--style", tmpFile.getRemote());
-            logCmd.add(argumentsForChangesSinceLastBuild(getBranch(), baseline));
-            logCmd.add("--no-merges"); //for polling in particular we are not interested in the merges
+            pull(launcher, repository, listener, output, node, getBranch());
 
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ForkOutputStream fos = new ForkOutputStream(baos, output);
-
-            joinWithPossibleTimeout(
-                    launch(launcher).cmds(logCmd).stdout(fos).pwd(repository),
-                    true, listener);
-
-            MercurialTagAction cur = parsePollingLogOutput(baos, baseline, changedFileNames);
-            return new PollingResult(baseline,cur,computeDegreeOfChanges(changedFileNames,output));
+            return compare(launcher, listener, baseline, output, changedFileNames, tmpFile, node, repository);
         } catch(IOException e) {
             if (causedByMissingHg(e)) {
                 listener.error("Failed to compare with remote repository because hg could not be found;" +
@@ -278,11 +275,28 @@ public class MercurialSCM extends SCM implements Serializable {
         }
     }
 
+    private PollingResult compare(Launcher launcher, TaskListener listener, MercurialTagAction baseline, PrintStream output, Set<String> changedFileNames, FilePath tmpFile, Node node, FilePath repository) throws IOException, InterruptedException {
+        ArgumentListBuilder logCmd = findHgExe(node, listener, false);
+        logCmd.add("log", "--style", tmpFile.getRemote());
+        logCmd.add(argumentsForChangesSinceLastBuild(getBranch(), baseline));
+        logCmd.add("--no-merges"); //for polling in particular we are not interested in the merges
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ForkOutputStream fos = new ForkOutputStream(baos, output);
+
+        joinWithPossibleTimeout(
+                launch(launcher).cmds(logCmd).stdout(fos).pwd(repository),
+                true, listener);
+
+        MercurialTagAction cur = parsePollingLogOutput(baos, baseline, changedFileNames);
+        return new PollingResult(baseline,cur,computeDegreeOfChanges(changedFileNames,output));
+    }
+
     private void pull(Launcher launcher, FilePath repository, TaskListener listener, PrintStream output, Node node, String branch) throws IOException, InterruptedException {
         ArgumentListBuilder cmd = findHgExe(node, listener, false);
         cmd.add("pull");
         cmd.add("--rev", branch);
-        PossiblyCachedRepo cachedSource = cachedSource(node, launcher, listener, true);
+        PossiblyCachedRepo cachedSource = getUpToDateCache(node, launcher, listener, true);
         if (cachedSource != null) {
             cmd.add(cachedSource.getRepoLocation());
         }
@@ -575,7 +589,7 @@ public class MercurialSCM extends SCM implements Serializable {
         HgExe hg = new HgExe(this,launcher,build.getBuiltOn(),listener,env);
 
         ArgumentListBuilder args = new ArgumentListBuilder();
-        PossiblyCachedRepo cachedSource = cachedSource(build.getBuiltOn(), launcher, listener, false);
+        PossiblyCachedRepo cachedSource = getUpToDateCache(build.getBuiltOn(), launcher, listener, false);
         if (cachedSource != null) {
             if (cachedSource.isUseSharing()) {
                 args.add("--config", "extensions.share=");
@@ -666,26 +680,19 @@ public class MercurialSCM extends SCM implements Serializable {
     }
 
     static boolean CACHE_LOCAL_REPOS = false;
-    private @CheckForNull PossiblyCachedRepo cachedSource(Node node, Launcher launcher, TaskListener listener, boolean fromPolling) {
+    private @CheckForNull PossiblyCachedRepo getUpToDateCache(Node node, Launcher launcher, TaskListener listener, boolean fromPolling) {
         if (!CACHE_LOCAL_REPOS && source.matches("(file:|[/\\\\]).+")) {
             return null;
         }
-        boolean useCaches = false;
-        MercurialInstallation _installation = null;
-        for (MercurialInstallation inst : MercurialInstallation.allInstallations()) {
-            if (inst.getName().equals(installation)) {
-                useCaches = inst.isUseCaches();
-                _installation = inst;
-                break;
-            }
-        }
+        MercurialInstallation installation = findInstallation(this.installation);
+        boolean useCaches = installation != null && installation.isUseCaches();
         if (!useCaches) {
             return null;
         }
         try {
             FilePath cache = Cache.fromURL(source).repositoryCache(this, node, launcher, listener, fromPolling);
             if (cache != null) {
-                return new PossiblyCachedRepo(cache.getRemote(), _installation.isUseCaches(), _installation.isUseSharing());
+                return new PossiblyCachedRepo(cache.getRemote(), installation.isUseCaches(), installation.isUseSharing());
             } else {
                 listener.error("Failed to use repository cache for " + source);
                 return null;
