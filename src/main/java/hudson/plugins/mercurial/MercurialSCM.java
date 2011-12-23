@@ -249,7 +249,11 @@ public class MercurialSCM extends SCM implements Serializable {
             FilePath repositoryCache = new FilePath(new File(possiblyCachedRepo.getRepoLocation()));
             FilePath styleFile = new FilePath(File.createTempFile("tmp", "style"));
             styleFile.write(FILES_STYLE, null);
-            return compare(launcher, listener, baseline, output, changedFileNames, styleFile, Hudson.getInstance(), repositoryCache);
+            try {
+                return compare(launcher, listener, baseline, output, changedFileNames, styleFile, Hudson.getInstance(), repositoryCache);
+            } finally {
+                styleFile.delete();
+            }
         }
         // Mercurial requires the style file to be in a file..
         FilePath tmpFile = workspace.createTextTempFile("tmp", "style", FILES_STYLE);
