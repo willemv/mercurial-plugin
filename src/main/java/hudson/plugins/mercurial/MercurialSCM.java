@@ -280,19 +280,29 @@ public class MercurialSCM extends SCM implements Serializable {
     }
 
     private PollingResult compare(Launcher launcher, TaskListener listener, MercurialTagAction baseline, PrintStream output, Set<String> changedFileNames, FilePath tmpFile, Node node, FilePath repository) throws IOException, InterruptedException {
-        ArgumentListBuilder logCmd = findHgExe(node, listener, false);
-        logCmd.add("log", "--style", tmpFile.getRemote());
-        logCmd.add(argumentsForChangesSinceLastBuild(getBranch(), baseline));
-        logCmd.add("--no-merges"); //for polling in particular we are not interested in the merges
+        ArgumentListBuilder statCmd = findHgExe(node, listener, false);
+        statCmd.add("stat", "--rev", baseline.getId(), "--rev", getBranch());
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        ForkOutputStream fos = new ForkOutputStream(baos, output);
-
+        ByteArrayOutputStream logBaos = new ByteArrayOutputStream();
+        ForkOutputStream logFos = new ForkOutputStream(logBaos, output);
+        ArgumentListBuilder logCommand = findHgExe(node, listener, false);
+        logCommand.add("log", "--rev", getBranch(), "--template", "{node}\\n");
         joinWithPossibleTimeout(
-                launch(launcher).cmds(logCmd).stdout(fos).pwd(repository),
+                launch(launcher).cmds(logCommand).stdout(logFos).pwd(repository),
                 true, listener);
+        MercurialTagAction cur = new MercurialTagAction(logBaos.toString().trim());
 
-        MercurialTagAction cur = parsePollingLogOutput(baos, baseline, changedFileNames);
+
+        if (!baseline.equals(cur)) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ForkOutputStream fos = new ForkOutputStream(baos, output);
+
+            joinWithPossibleTimeout(
+                    launch(launcher).cmds(statCmd).stdout(fos).pwd(repository),
+                    true, listener);
+            parsePollingStatusOutput(baos, baseline, changedFileNames);
+        }
+
         return new PollingResult(baseline,cur,computeDegreeOfChanges(changedFileNames,output));
     }
 
@@ -355,34 +365,12 @@ public class MercurialSCM extends SCM implements Serializable {
         return affecting;
     }
 
-    private static Pattern FILES_LINE = Pattern.compile("files:(.*)");
-
-    private MercurialTagAction parsePollingLogOutput(ByteArrayOutputStream output, MercurialTagAction baseline,  Set<String> result) throws IOException {
-        String headId = null; // the tip of the remote revision
-        BufferedReader in = new BufferedReader(new InputStreamReader(
-                new ByteArrayInputStream(output.toByteArray())));
+    private void parsePollingStatusOutput(ByteArrayOutputStream output, MercurialTagAction baseline, Set<String> result) throws IOException {
+        BufferedReader in = new BufferedReader(new InputStreamReader(new ByteArrayInputStream(output.toByteArray())));
         String line;
         while ((line = in.readLine()) != null) {
-            Matcher matcher = FILES_LINE.matcher(line);
-            if (matcher.matches()) {
-                for (String s : matcher.group(1).split(":")) {
-                    if (s.length() > 0) {
-                        result.add(s);
-                    }
-                }
-            }
-            if (line.startsWith("id:")) {
-                String id = line.substring(3);
-                if (headId == null) {
-                    headId = id;
-                }
-            }
+            result.add(line.substring(2));
         }
-
-        if (headId==null) {
-            return baseline; // no new revisions found
-        }
-        return new MercurialTagAction(headId);
     }
 
     public static MercurialInstallation findInstallation(String name) {

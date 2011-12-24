@@ -56,4 +56,15 @@ public class MercurialTagAction extends SCMRevisionState {
     public String getUrlName() {
         return "mercurial";
     }
+
+    @Override
+    public int hashCode() {
+        return id.hashCode();
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        MercurialTagAction other = (MercurialTagAction) obj;
+        return id.equals(other.id);
+    }
 }

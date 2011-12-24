@@ -255,6 +255,30 @@ public class MercurialSCMTest extends MercurialTestCase {
         assertFalse(it.hasNext());
     }
 
+    public void testChangesInRenamedFilesTriggerBuild() throws Exception {
+        hg(repo, "init");
+        touchAndCommit(repo, "all/api", "all/impl");
+        hg(repo, "branch", "stable");
+        touchAndCommit(repo, "all/impl");
+
+        hg(repo, "up", "default");
+        hg(repo, "mv", "all/api", "api/api");
+        hg(repo, "mv", "all/impl", "impl/impl");
+        hg(repo, "commit", "--message", "reorganizing repository");
+        String base = getLastChangesetId(repo);
+
+        FreeStyleProject p = createFreeStyleProject();
+        p.setScm(new MercurialSCM(hgInstallation, repo.getPath(), null, "impl",
+                null, null, false));
+        p.scheduleBuild2(0).get();
+
+        hg(repo, "merge", "stable");
+        hg(repo, "commit", "--message", "merge");
+        String last = getLastChangesetId(repo);
+
+        assertPollingResult(PollingResult.Change.SIGNIFICANT, base, last, pollSCMChanges(p));
+    }
+
     @Bug(3602)
     public void testSubdirectoryCheckout() throws Exception {
         FreeStyleProject p = createFreeStyleProject();
